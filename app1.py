@@ -5,6 +5,38 @@ from datetime import datetime
 from PIL import Image, ImageDraw
 import tensorflow as tf
 import plotly.express as px
+from tensorflow.keras.models import load_model
+
+# Load the trained model
+model = load_model('trained_pcb_model.h5')
+import cv2
+import numpy as np
+
+IMG_SIZE = 128
+
+def preprocess_image(uploaded_file):
+    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+    img = cv2.imdecode(file_bytes, 1)
+    img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
+    img = img / 255.0
+    return np.expand_dims(img, axis=0)
+import streamlit as st
+
+st.title("PCB Defect Detection")
+uploaded_file = st.file_uploader("Upload a PCB image...", type=["jpg", "png", "jpeg"])
+
+if uploaded_file is not None:
+    st.image(uploaded_file, caption='Uploaded Image', use_column_width=True)
+
+    if st.button("Detect Defect"):
+        img = preprocess_image(uploaded_file)
+        prediction = model.predict(img)[0][0]
+
+        if prediction >= 0.5:
+            st.error(f"❌ Defective PCB Detected! (Confidence: {prediction:.2f})")
+        else:
+            st.success(f"✅ Good PCB Detected! (Confidence: {1 - prediction:.2f})")
+
 
 # Page setup
 st.set_page_config(page_title="PCB Defect Detection", layout="centered")
