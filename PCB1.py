@@ -544,9 +544,51 @@ def main():
             col1, col2 = st.columns(2)
             
             with col1:
-                st.markdown("#### 🖥️ Generated Sample PCB")
-                st.image(sample_pcb, caption=f"Sample Type: {demo_type.title()}", use_column_width=True)
-                
-                st.markdown(f"""
-                <div class="info-card">
-                    <strong>
+                ...
+        # Display defect types in organized layout
+        st.markdown("##### 🔍 **Detectable Defect Types:**")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("""
+            - Missing Component
+            - Wrong Component
+            - Damaged Component
+            - Soldering Defect
+            - Short Circuit
+            """)
+
+        with col2:
+            st.markdown("""
+            - Open Circuit
+            - Misalignment
+            - Corrosion
+            - Crack
+            - Contamination
+            """)
+
+        st.markdown("""
+        #### 📈 **Performance Highlights**
+        - Simulates realistic AI-based PCB defect detection
+        - Works with custom uploaded PCB images
+        - Detects defects with different severity levels
+        - Generates demo PCBs and batch processing simulations
+
+        #### 🚀 **How to Use**
+        1. Upload a PCB image or generate a sample.
+        2. Adjust the detection confidence in the sidebar.
+        3. View the detection results and summary report.
+
+        #### 📅 **Version**
+        - Streamlit App v1.0 (Zero Dependency AI Simulation)
+
+        #### 😎 **Created by**
+        - Prajith A, B.Tech AI&DS
+        - United Institute of Technology
+        """)
+
+if __name__ == "__main__":
+    main()
+
+               
