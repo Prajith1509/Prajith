@@ -1,17 +1,16 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
-import io
+import matplotlib.pyplot as plt
+import seaborn as sns
 from datetime import datetime, timedelta
-from sklearn.ensemble import IsolationForest
-from sklearn.preprocessing import StandardScaler
-from sklearn.covariance import EllipticEnvelope
-from sklearn.svm import OneClassSVM
+import io
 import warnings
 warnings.filterwarnings('ignore')
+
+# Set matplotlib style
+plt.style.use('default')
+sns.set_palette("husl")
 
 # Page configuration
 st.set_page_config(
@@ -52,9 +51,6 @@ st.markdown("""
         padding: 1rem;
         border-radius: 0.5rem;
         border-left: 5px solid #4caf50;
-        margin: 1rem 0;
-    }
-    .stAlert {
         margin: 1rem 0;
     }
 </style>
@@ -106,21 +102,17 @@ class SatelliteDataSimulator:
                 anomaly_type = np.random.choice(['thermal_spike', 'power_drop', 'sensor_drift', 'eclipse_anomaly'])
                 
                 if anomaly_type == 'thermal_spike':
-                    # Sudden temperature increase (solar panel heating)
                     if param == 'temperature':
                         values[idx:idx+3] += np.random.uniform(8, 15)
                 elif anomaly_type == 'power_drop':
-                    # Battery/power system issues
                     if param in ['voltage', 'current']:
                         drop_duration = min(5, n_points - idx)
                         values[idx:idx+drop_duration] *= np.random.uniform(0.6, 0.8)
                 elif anomaly_type == 'sensor_drift':
-                    # Gradual sensor degradation
                     drift_duration = min(20, n_points - idx)
                     drift_factor = np.linspace(1, np.random.uniform(1.2, 1.5), drift_duration)
                     values[idx:idx+drift_duration] *= drift_factor
                 elif anomaly_type == 'eclipse_anomaly':
-                    # Eclipse period effects
                     if param == 'temperature':
                         values[idx:idx+4] -= np.random.uniform(5, 10)
             
@@ -140,183 +132,172 @@ class SatelliteDataSimulator:
         return pd.DataFrame(data)
 
 class SimpleAnomalyDetector:
-    """Lightweight anomaly detection using only sklearn"""
+    """Simple statistical anomaly detection without external ML libraries"""
     
     def __init__(self):
-        self.models = {}
-        self.scalers = {}
-        self.feature_columns = ['temperature', 'voltage', 'current', 'pressure']
         self.thresholds = {}
+        self.feature_columns = ['temperature', 'voltage', 'current', 'pressure']
+        self.trained = False
     
-    def train_isolation_forest(self, data):
-        """Train Isolation Forest model"""
-        X = data[self.feature_columns]
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
+    def train_statistical_model(self, data):
+        """Train statistical threshold-based detection using Z-score and IQR methods"""
+        self.thresholds = {}
         
-        model = IsolationForest(
-            contamination=0.1, 
-            random_state=42,
-            n_estimators=100
-        )
-        model.fit(X_scaled)
-        
-        self.models['isolation_forest'] = model
-        self.scalers['isolation_forest'] = scaler
-        
-        return model
-    
-    def train_elliptic_envelope(self, data):
-        """Train Elliptic Envelope model (Robust Covariance)"""
-        X = data[self.feature_columns]
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
-        
-        model = EllipticEnvelope(contamination=0.1, random_state=42)
-        model.fit(X_scaled)
-        
-        self.models['elliptic_envelope'] = model
-        self.scalers['elliptic_envelope'] = scaler
-        
-        return model
-    
-    def train_one_class_svm(self, data):
-        """Train One-Class SVM model"""
-        X = data[self.feature_columns]
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
-        
-        model = OneClassSVM(nu=0.1, kernel='rbf', gamma='scale')
-        model.fit(X_scaled)
-        
-        self.models['one_class_svm'] = model
-        self.scalers['one_class_svm'] = scaler
-        
-        return model
-    
-    def train_statistical_threshold(self, data):
-        """Train statistical threshold-based detection"""
-        thresholds = {}
         for col in self.feature_columns:
-            mean = data[col].mean()
-            std = data[col].std()
-            thresholds[col] = {
-                'lower': mean - 3 * std,
-                'upper': mean + 3 * std,
-                'mean': mean,
-                'std': std
-            }
+            if col in data.columns:
+                values = data[col]
+                
+                # Calculate basic statistics
+                mean_val = values.mean()
+                std_val = values.std()
+                median_val = values.median()
+                q1 = values.quantile(0.25)
+                q3 = values.quantile(0.75)
+                iqr = q3 - q1
+                
+                # Multiple threshold methods
+                self.thresholds[col] = {
+                    # Z-score method (3-sigma rule)
+                    'zscore_lower': mean_val - 3 * std_val,
+                    'zscore_upper': mean_val + 3 * std_val,
+                    
+                    # IQR method
+                    'iqr_lower': q1 - 1.5 * iqr,
+                    'iqr_upper': q3 + 1.5 * iqr,
+                    
+                    # Modified Z-score using median
+                    'mad': np.median(np.abs(values - median_val)),
+                    'median': median_val,
+                    
+                    # Basic stats for scoring
+                    'mean': mean_val,
+                    'std': std_val,
+                    'min': values.min(),
+                    'max': values.max()
+                }
         
-        self.thresholds['statistical'] = thresholds
-        return thresholds
+        self.trained = True
+        return self.thresholds
     
-    def detect_anomalies(self, data, model_type='isolation_forest'):
-        """Detect anomalies using specified model"""
-        X = data[self.feature_columns]
+    def detect_anomalies(self, data, method='combined'):
+        """Detect anomalies using statistical methods"""
+        if not self.trained:
+            st.error("Model not trained! Please train the model first.")
+            return np.zeros(len(data), dtype=bool), np.zeros(len(data))
         
-        if model_type == 'statistical':
-            anomalies = np.zeros(len(data), dtype=bool)
-            scores = np.zeros(len(data))
-            
-            for col in self.feature_columns:
-                thresh = self.thresholds['statistical'][col]
-                col_anomalies = (data[col] < thresh['lower']) | (data[col] > thresh['upper'])
+        anomalies = np.zeros(len(data), dtype=bool)
+        scores = np.zeros(len(data))
+        
+        for col in self.feature_columns:
+            if col in data.columns:
+                values = data[col]
+                thresh = self.thresholds[col]
+                
+                if method == 'zscore':
+                    # Z-score method
+                    col_anomalies = (values < thresh['zscore_lower']) | (values > thresh['zscore_upper'])
+                    col_scores = np.abs((values - thresh['mean']) / thresh['std'])
+                
+                elif method == 'iqr':
+                    # IQR method
+                    col_anomalies = (values < thresh['iqr_lower']) | (values > thresh['iqr_upper'])
+                    col_scores = np.maximum(
+                        (thresh['iqr_lower'] - values) / (thresh['iqr_lower'] - thresh['min'] + 1e-6),
+                        (values - thresh['iqr_upper']) / (thresh['max'] - thresh['iqr_upper'] + 1e-6)
+                    )
+                    col_scores = np.maximum(col_scores, 0)
+                
+                else:  # combined method
+                    # Combine both methods
+                    zscore_anomalies = (values < thresh['zscore_lower']) | (values > thresh['zscore_upper'])
+                    iqr_anomalies = (values < thresh['iqr_lower']) | (values > thresh['iqr_upper'])
+                    
+                    col_anomalies = zscore_anomalies | iqr_anomalies
+                    
+                    # Combined scoring
+                    zscore_scores = np.abs((values - thresh['mean']) / thresh['std'])
+                    iqr_scores = np.maximum(
+                        (thresh['iqr_lower'] - values) / (thresh['iqr_lower'] - thresh['min'] + 1e-6),
+                        (values - thresh['iqr_upper']) / (thresh['max'] - thresh['iqr_upper'] + 1e-6)
+                    )
+                    iqr_scores = np.maximum(iqr_scores, 0)
+                    col_scores = np.maximum(zscore_scores, iqr_scores)
+                
                 anomalies |= col_anomalies
-                # Calculate z-scores
-                z_scores = np.abs((data[col] - thresh['mean']) / thresh['std'])
-                scores = np.maximum(scores, z_scores)
-        
-        else:
-            X_scaled = self.scalers[model_type].transform(X)
-            predictions = self.models[model_type].predict(X_scaled)
-            anomalies = predictions == -1
-            
-            # Get anomaly scores
-            if hasattr(self.models[model_type], 'score_samples'):
-                scores = -self.models[model_type].score_samples(X_scaled)  # Higher = more anomalous
-            elif hasattr(self.models[model_type], 'decision_function'):
-                scores = -self.models[model_type].decision_function(X_scaled)
-            else:
-                scores = np.random.random(len(data))  # Fallback
+                scores = np.maximum(scores, col_scores)
         
         return anomalies, scores
 
 def create_telemetry_plots(data, anomalies=None):
-    """Create comprehensive telemetry visualization"""
-    fig = make_subplots(
-        rows=2, cols=2,
-        subplot_titles=('Temperature (°C)', 'Voltage (V)', 'Current (A)', 'Pressure (hPa)'),
-        vertical_spacing=0.12,
-        horizontal_spacing=0.08
-    )
+    """Create telemetry visualization using matplotlib"""
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    fig.suptitle('🛰️ Satellite Telemetry Dashboard - Real-time Monitoring', fontsize=16, fontweight='bold')
     
     params = ['temperature', 'voltage', 'current', 'pressure']
+    units = ['°C', 'V', 'A', 'hPa']
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
     
-    for i, (param, color) in enumerate(zip(params, colors)):
-        row = i // 2 + 1
-        col = i % 2 + 1
+    for i, (param, unit, color) in enumerate(zip(params, units, colors)):
+        row = i // 2
+        col = i % 2
+        ax = axes[row, col]
         
-        # Normal data line
-        fig.add_trace(
-            go.Scatter(
-                x=data['timestamp'],
-                y=data[param],
-                mode='lines',
-                name=param.title(),
-                line=dict(color=color, width=2),
-                showlegend=False
-            ),
-            row=row, col=col
-        )
-        
-        # Add markers for recent data points
-        recent_data = data.tail(10)
-        fig.add_trace(
-            go.Scatter(
-                x=recent_data['timestamp'],
-                y=recent_data[param],
-                mode='markers',
-                marker=dict(color=color, size=6),
-                showlegend=False
-            ),
-            row=row, col=col
-        )
-        
-        # Highlight anomalies
-        if anomalies is not None:
-            anomaly_data = data[anomalies]
-            if not anomaly_data.empty:
-                fig.add_trace(
-                    go.Scatter(
-                        x=anomaly_data['timestamp'],
-                        y=anomaly_data[param],
-                        mode='markers',
-                        name=f'{param.title()} Anomalies',
-                        marker=dict(color='red', size=10, symbol='x-thin'),
-                        showlegend=False
-                    ),
-                    row=row, col=col
-                )
+        if param in data.columns:
+            # Plot normal data
+            ax.plot(data['timestamp'], data[param], color=color, linewidth=2, alpha=0.8, label='Normal')
+            
+            # Highlight anomalies
+            if anomalies is not None:
+                anomaly_data = data[anomalies]
+                if not anomaly_data.empty:
+                    ax.scatter(anomaly_data['timestamp'], anomaly_data[param], 
+                             color='red', s=50, marker='x', linewidth=3, label='Anomalies', zorder=5)
+            
+            ax.set_title(f'{param.title()} ({unit})', fontweight='bold')
+            ax.set_xlabel('Time')
+            ax.set_ylabel(f'{param.title()} ({unit})')
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+            
+            # Rotate x-axis labels for better readability
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
     
-    fig.update_layout(
-        height=600,
-        title_text="🛰️ Satellite Telemetry Dashboard - Real-time Monitoring",
-        title_x=0.5,
-        showlegend=False,
-        template="plotly_white"
-    )
+    plt.tight_layout()
+    return fig
+
+def create_anomaly_distribution_plot(scores):
+    """Create anomaly score distribution plot"""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
     
+    # Histogram of anomaly scores
+    ax1.hist(scores, bins=30, alpha=0.7, color='skyblue', edgecolor='black')
+    ax1.axvline(np.percentile(scores, 90), color='red', linestyle='--', 
+                label=f'90th Percentile: {np.percentile(scores, 90):.2f}')
+    ax1.set_title('Anomaly Score Distribution')
+    ax1.set_xlabel('Anomaly Score')
+    ax1.set_ylabel('Frequency')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Time series of anomaly scores
+    ax2.plot(scores, color='orange', linewidth=2)
+    ax2.axhline(np.percentile(scores, 90), color='red', linestyle='--', alpha=0.7)
+    ax2.set_title('Anomaly Scores Over Time')
+    ax2.set_xlabel('Data Point Index')
+    ax2.set_ylabel('Anomaly Score')
+    ax2.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
     return fig
 
 def create_system_health_chart(data):
-    """Create system health overview chart"""
-    latest_data = data.tail(20)
+    """Create system health overview"""
+    fig, ax = plt.subplots(figsize=(10, 4))
     
-    fig = go.Figure()
-    
-    # Overall health score (simplified calculation)
+    # Simple health scoring
+    latest_data = data.tail(50)  # Last 50 points
     health_scores = []
+    
     for _, row in latest_data.iterrows():
         # Simple health scoring based on parameter ranges
         temp_score = 1.0 if 18 <= row['temperature'] <= 28 else 0.5
@@ -327,26 +308,25 @@ def create_system_health_chart(data):
         overall_health = (temp_score + voltage_score + current_score + pressure_score) / 4
         health_scores.append(overall_health * 100)
     
-    fig.add_trace(go.Scatter(
-        x=latest_data['timestamp'],
-        y=health_scores,
-        mode='lines+markers',
-        name='System Health',
-        line=dict(color='green', width=3),
-        fill='tonexty'
-    ))
+    ax.plot(latest_data['timestamp'], health_scores, color='green', linewidth=3, marker='o', markersize=4)
+    ax.fill_between(latest_data['timestamp'], health_scores, alpha=0.3, color='green')
+    ax.set_title('System Health Score (%)', fontweight='bold')
+    ax.set_xlabel('Time')
+    ax.set_ylabel('Health Score (%)')
+    ax.set_ylim(0, 100)
+    ax.grid(True, alpha=0.3)
     
-    fig.update_layout(
-        title="System Health Score (%)",
-        xaxis_title="Time",
-        yaxis_title="Health Score",
-        yaxis=dict(range=[0, 100]),
-        height=300
-    )
+    # Add threshold lines
+    ax.axhline(90, color='green', linestyle='--', alpha=0.7, label='Excellent')
+    ax.axhline(70, color='orange', linestyle='--', alpha=0.7, label='Good')
+    ax.axhline(50, color='red', linestyle='--', alpha=0.7, label='Warning')
+    ax.legend()
     
+    plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
+    plt.tight_layout()
     return fig
 
-def generate_anomaly_report(data, anomalies, model_type):
+def generate_anomaly_report(data, anomalies, method):
     """Generate detailed anomaly report"""
     anomaly_count = anomalies.sum()
     total_points = len(data)
@@ -355,7 +335,7 @@ def generate_anomaly_report(data, anomalies, model_type):
     report = f"""# 🛰️ Satellite Anomaly Detection Report
 
 **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  
-**Model Used:** {model_type.replace('_', ' ').title()}  
+**Detection Method:** {method.replace('_', ' ').title()}  
 **Analysis Period:** {data['timestamp'].min()} to {data['timestamp'].max()}  
 
 ## Executive Summary
@@ -368,13 +348,15 @@ def generate_anomaly_report(data, anomalies, model_type):
 """
     
     # Parameter statistics
-    for param in ['temperature', 'voltage', 'current', 'pressure']:
-        mean_val = data[param].mean()
-        std_val = data[param].std()
-        min_val = data[param].min()
-        max_val = data[param].max()
-        
-        report += f"""
+    required_columns = ['temperature', 'voltage', 'current', 'pressure']
+    for param in required_columns:
+        if param in data.columns:
+            mean_val = data[param].mean()
+            std_val = data[param].std()
+            min_val = data[param].min()
+            max_val = data[param].max()
+            
+            report += f"""
 ### {param.title()}
 - **Mean:** {mean_val:.2f}
 - **Std Dev:** {std_val:.2f}
@@ -393,8 +375,7 @@ def generate_anomaly_report(data, anomalies, model_type):
 - Voltage: {row['voltage']:.2f}V  
 - Current: {row['current']:.2f}A
 - Pressure: {row['pressure']:.2f}hPa
-- Mode: {row['satellite_mode']}
-- Data Quality: {row['data_quality']:.1%}
+- Mode: {row.get('satellite_mode', 'N/A')}
 """
         
         if len(anomaly_data) > 10:
@@ -423,8 +404,8 @@ if 'simulator' not in st.session_state:
     st.session_state.simulator = SatelliteDataSimulator()
 
 def main():
-    st.title("🛰️ URSC Satellite Health Monitoring System")
-    st.markdown("**AI-Based Anomaly Detection in Satellite Telemetry Data**")
+    st.title("🛰️ AI-Based Anomaly Detection in Satellite Health Telemetry")
+    st.markdown("**URSC Satellite Health Monitoring System**")
     st.markdown("---")
     
     # Sidebar configuration
@@ -460,33 +441,28 @@ def main():
                 data = pd.read_csv(uploaded_file)
                 if 'timestamp' not in data.columns:
                     data['timestamp'] = pd.date_range(start='2024-01-01', periods=len(data), freq='5min')
-                
-                # Add missing columns with default values if needed
-                required_cols = ['temperature', 'voltage', 'current', 'pressure']
-                for col in required_cols:
-                    if col not in data.columns:
-                        st.sidebar.warning(f"Missing column: {col}")
+                else:
+                    data['timestamp'] = pd.to_datetime(data['timestamp'])
                 
                 st.session_state.data = data
                 st.sidebar.success("✅ File uploaded successfully!")
             except Exception as e:
                 st.sidebar.error(f"Error reading file: {str(e)}")
     
-    # Model selection
-    st.sidebar.subheader("🤖 AI Model Selection")
-    model_type = st.sidebar.selectbox(
+    # Detection method selection
+    st.sidebar.subheader("🔍 Detection Method")
+    detection_method = st.sidebar.selectbox(
         "Anomaly Detection Algorithm",
-        ["isolation_forest", "elliptic_envelope", "one_class_svm", "statistical"],
-        help="Choose the AI algorithm for anomaly detection"
+        ["combined", "zscore", "iqr"],
+        help="Choose the statistical method for anomaly detection"
     )
     
-    model_descriptions = {
-        "isolation_forest": "🌳 Isolation Forest - Tree-based anomaly detection",
-        "elliptic_envelope": "📊 Elliptic Envelope - Robust covariance estimation", 
-        "one_class_svm": "🎯 One-Class SVM - Support vector anomaly detection",
-        "statistical": "📈 Statistical Threshold - Traditional 3-sigma rule"
+    method_descriptions = {
+        "combined": "🔄 Combined Method - Uses both Z-score and IQR methods",
+        "zscore": "📊 Z-Score Method - Traditional 3-sigma statistical rule", 
+        "iqr": "📈 IQR Method - Interquartile range outlier detection"
     }
-    st.sidebar.info(model_descriptions[model_type])
+    st.sidebar.info(method_descriptions[detection_method])
     
     # Main content
     if 'data' in st.session_state:
@@ -502,18 +478,10 @@ def main():
             return
         
         # Train model and detect anomalies
-        with st.spinner(f"🔍 Training {model_type.replace('_', ' ').title()} model..."):
+        with st.spinner(f"🔍 Training {detection_method} anomaly detection model..."):
             try:
-                if model_type == 'isolation_forest':
-                    st.session_state.detector.train_isolation_forest(data)
-                elif model_type == 'elliptic_envelope':
-                    st.session_state.detector.train_elliptic_envelope(data)
-                elif model_type == 'one_class_svm':
-                    st.session_state.detector.train_one_class_svm(data)
-                else:  # statistical
-                    st.session_state.detector.train_statistical_threshold(data)
-                
-                anomalies, scores = st.session_state.detector.detect_anomalies(data, model_type)
+                st.session_state.detector.train_statistical_model(data)
+                anomalies, scores = st.session_state.detector.detect_anomalies(data, detection_method)
                 
             except Exception as e:
                 st.error(f"❌ Error in model training: {str(e)}")
@@ -581,19 +549,26 @@ def main():
         
         # Main telemetry visualization
         st.markdown("### 📈 Real-time Telemetry Dashboard")
-        fig = create_telemetry_plots(data, anomalies)
-        st.plotly_chart(fig, use_container_width=True)
+        try:
+            fig = create_telemetry_plots(data, anomalies)
+            st.pyplot(fig)
+            plt.close(fig)  # Close to prevent memory issues
+        except Exception as e:
+            st.error(f"Error creating telemetry plots: {str(e)}")
         
-        # System health overview
+        # Two column layout for additional information
         col1, col2 = st.columns([2, 1])
         
         with col1:
             if anomalies.sum() > 0:
                 st.markdown("### 🔍 Detected Anomalies")
-                anomaly_data = data[anomalies][['timestamp'] + required_columns + ['satellite_mode']].copy()
+                anomaly_data = data[anomalies][['timestamp'] + required_columns].copy()
+                if 'satellite_mode' in data.columns:
+                    anomaly_data['satellite_mode'] = data[anomalies]['satellite_mode']
+                
                 anomaly_data['timestamp'] = anomaly_data['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
                 
-                # Style the dataframe
+                # Display the dataframe
                 st.dataframe(
                     anomaly_data, 
                     use_container_width=True,
@@ -608,8 +583,12 @@ def main():
         
         with col2:
             st.markdown("### 🏥 System Health")
-            health_fig = create_system_health_chart(data)
-            st.plotly_chart(health_fig, use_container_width=True)
+            try:
+                health_fig = create_system_health_chart(data)
+                st.pyplot(health_fig)
+                plt.close(health_fig)
+            except Exception as e:
+                st.error(f"Error creating health chart: {str(e)}")
         
         # Current system parameters
         st.markdown("### 🔧 Current System Parameters")
@@ -626,8 +605,10 @@ def main():
         
         with param_col2:
             st.markdown("**Operational Status:**")
-            st.write(f"🛰️ **Mode:** {latest_data['satellite_mode']}")
-            st.write(f"📊 **Data Quality:** {latest_data['data_quality']:.1%}")
+            if 'satellite_mode' in latest_data:
+                st.write(f"🛰️ **Mode:** {latest_data['satellite_mode']}")
+            if 'data_quality' in latest_data:
+                st.write(f"📊 **Data Quality:** {latest_data['data_quality']:.1%}")
             if 'signal_strength' in latest_data:
                 st.write(f"📡 **Signal Strength:** {latest_data['signal_strength']:.1%}")
             st.write(f"⏰ **Last Update:** {latest_data['timestamp'].strftime('%H:%M:%S')}")
@@ -635,20 +616,12 @@ def main():
         # Anomaly score visualization
         if len(scores) > 0 and max(scores) > 0:
             st.markdown("### 📊 Anomaly Score Analysis")
-            fig_hist = px.histogram(
-                x=scores,
-                nbins=30,
-                title="Distribution of Anomaly Scores",
-                labels={'x': 'Anomaly Score', 'y': 'Frequency'},
-                template="plotly_white"
-            )
-            fig_hist.add_vline(
-                x=np.percentile(scores, 90), 
-                line_dash="dash", 
-                line_color="red",
-                annotation_text="90th Percentile"
-            )
-            st.plotly_chart(fig_hist, use_container_width=True)
+            try:
+                fig_dist = create_anomaly_distribution_plot(scores)
+                st.pyplot(fig_dist)
+                plt.close(fig_dist)
+            except Exception as e:
+                st.error(f"Error creating anomaly distribution plot: {str(e)}")
         
         # Report generation
         st.markdown("### 📋 Generate Mission Report")
@@ -657,7 +630,7 @@ def main():
         with col1:
             if st.button("📄 Generate Detailed Report", type="primary"):
                 with st.spinner("📝 Generating comprehensive anomaly report..."):
-                    report = generate_anomaly_report(data, anomalies, model_type)
+                    report = generate_anomaly_report(data, anomalies, detection_method)
                     st.session_state.report = report
                     st.success("✅ Report generated successfully!")
         
@@ -703,6 +676,45 @@ def main():
         - `current`: Current draw in Amperes
         - `pressure`: Internal pressure in hPa
         """)
+        
+        # Show project features
+        st.markdown("### 🚀 Key Features")
+        
+        feature_col1, feature_col2 = st.columns(2)
+        
+        with feature_col1:
+            st.markdown("""
+            **🤖 AI Detection Methods:**
+            - Statistical Z-Score Analysis
+            - Interquartile Range (IQR) Method
+            - Combined Multi-Method Approach
+            - Real-time Anomaly Scoring
+            """)
+            
+            st.markdown("""
+            **📊 Monitoring Capabilities:**
+            - Temperature Monitoring
+            - Power System Analysis
+            - Pressure Variations
+            - System Health Scoring
+            """)
+        
+        with feature_col2:
+            st.markdown("""
+            **⚠️ Alert System:**
+            - Real-time Anomaly Detection
+            - Critical/Warning/Normal Status
+            - Historical Pattern Analysis
+            - Automated Report Generation
+            """)
+            
+            st.markdown("""
+            **📋 Reporting Features:**
+            - Detailed Anomaly Reports
+            - Statistical Analysis
+            - Downloadable Documentation
+            - Mission-Ready Formats
+            """)
 
 if __name__ == "__main__":
     main()
